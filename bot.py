@@ -265,11 +265,26 @@ def make_client() -> discord.Client:
 
     @client.event
     async def on_message(msg: discord.Message) -> None:
+        print(
+            f"[on_message] author={msg.author} content={msg.content!r} "
+            f"mentions={[m.id for m in msg.mentions]} "
+            f"channel={type(msg.channel).__name__}"
+        )
+        try:
+            await _handle_message(client, msg)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
+    async def _handle_message(client: discord.Client, msg: discord.Message) -> None:
         if msg.author.bot or client.user is None:
             return
 
         is_thread = isinstance(msg.channel, discord.Thread)
-        mentioned = client.user in msg.mentions
+        me = msg.guild.me if msg.guild else None
+        mentioned = client.user in msg.mentions or (
+            me is not None and any(r in msg.role_mentions for r in me.roles)
+        )
 
         thread_key = str(msg.channel.id)
         existing_sid, existing_seq = _load_state(thread_key) if is_thread else (None, 0)
