@@ -1,0 +1,11 @@
+# Railway service config for the Discord bot.
+# Mount a Railway Volume at /data so the SQLite state file survives
+# redeploys.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+restartPolicyType = "ALWAYS"
+numReplicas = 1
