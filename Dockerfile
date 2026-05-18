@@ -11,9 +11,9 @@ WORKDIR /app
 COPY pyproject.toml ./
 RUN uv pip install --system --no-cache .
 
-COPY bot.py ./
+COPY app ./app
 
 ENV PYTHONUNBUFFERED=1 \
     STATE_DB_PATH=/data/state.db
 
-CMD ["python", "-u", "-c", "import bot; bot.main()"]
+CMD ["python", "-m", "app.main"]

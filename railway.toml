@@ -1,6 +1,5 @@
 # Railway service config for the Discord bot.
-# Mount a Railway Volume at /data so the SQLite state file survives
-# redeploys.
+# Mount a Railway Volume at /data so the SQLite state file survives redeploys.
 
 [build]
 builder = "DOCKERFILE"
