@@ -20,11 +20,18 @@ def _connect() -> sqlite3.Connection:
             thread_id   TEXT PRIMARY KEY,
             session_id  TEXT NOT NULL,
             last_seq    INTEGER NOT NULL DEFAULT 0,
-            created_at  INTEGER NOT NULL,
-            updated_at  INTEGER NOT NULL
+            created_at  INTEGER NOT NULL DEFAULT 0,
+            updated_at  INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    # Migrate the pre-refactor schema (which lacked the timestamp columns)
+    # so existing Railway volumes don't trip on the INSERT below.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(thread_sessions)")}
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE thread_sessions ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0")
+    if "updated_at" not in cols:
+        conn.execute("ALTER TABLE thread_sessions ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_thread_sessions_updated_at "
         "ON thread_sessions(updated_at)"
