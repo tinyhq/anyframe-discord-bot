@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,7 +8,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     anyframe_base_url: str = "https://api.anyfrm.com"
-    anyframe_api_key: str
+    # Accept the SDK-standard ANYFRAME_API_KEY, but also the legacy
+    # ANYFRAME_API_TOKEN used by earlier deployments of this bot.
+    anyframe_api_key: str = Field(
+        validation_alias=AliasChoices("ANYFRAME_API_KEY", "ANYFRAME_API_TOKEN"),
+    )
     anyframe_agent_id: int
 
     discord_bot_token: str
