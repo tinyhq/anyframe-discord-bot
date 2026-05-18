@@ -1,73 +1,167 @@
 # anyframe-discord-bot
 
-Discord bot that drives an [anyframe](https://anyfrm.com) agent. @mention
-the bot in any channel and it spawns a thread, boots a sandbox, and
-streams the agent's replies back. Subsequent messages in the thread
-continue the same session — resuming from the latest snapshot if the
-sandbox has been evicted.
+A drop-in Discord bot powered by [anyframe](https://anyfrm.com). @mention
+the bot in any channel and it spawns a thread and a private agent
+sandbox — each thread runs in its own isolated session.
+
+```
+ ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+ │   Discord    │──▶│  this bot    │──▶│  sandbox 1   │
+ │  (your bot)  │   │ + API key    │   │  sandbox 2   │
+ │              │   │ + sessions   │   │  sandbox …   │
+ └──────────────┘   └──────────────┘   └──────────────┘
+                                       one per thread on anyfrm.com,
+                                       snapshot + resume across evictions
+```
+
+Each thread maps to its own sandbox, snapshotted between turns so
+evictions are invisible. Your `afm_…` key stays on your server; the
+Discord side only sees rendered events.
+
+## Quick start
+
+### 1. Create your agent
+
+[anyfrm.com](https://anyfrm.com) → **New agent**. Pick a harness
+(Claude or Codex), set the system prompt, optionally point it at a
+repo. Note the id from the URL (`/agents/123`).
+
+### 2. Get an API key
+
+**Settings → API keys → Create**. Copy the `afm_…` value.
+
+### 3. Create the Discord app
+
+Discord Developer Portal → **New Application** → **Bot** tab → reset
+token and copy it. On the same page, enable **Message Content Intent**
+under *Privileged Gateway Intents*.
+
+Then **OAuth2 → URL Generator**. Scopes: `bot`. Permissions:
+
+- Send Messages
+- Read Message History
+- Create Public Threads
+- Send Messages in Threads
+
+Open the generated URL and invite the bot to your server.
+
+### 4. Deploy this bot
+
+Fork the repo, push to [Railway](https://railway.com) (or any Docker
+host). Set four env vars:
+
+```
+ANYFRAME_API_KEY=afm_…
+ANYFRAME_AGENT_ID=123
+DISCORD_BOT_TOKEN=…
+```
+
+Mount a `/data` volume so the thread → session mapping persists across
+redeploys. The bot connects to Discord on boot — watch the logs for
+`logged in as <bot-name>`.
 
 ## How it works
 
 | Trigger | What the bot does |
 | --- | --- |
-| `@bot <prompt>` in a channel | Creates a thread, creates a new anyframe session, sends `prompt` to it, streams events back. |
+| `@bot <prompt>` in a channel | Creates a thread, opens a fresh anyframe session, sends the prompt, streams events back. |
 | Any message inside that thread | Forwarded to the same session. No mention needed. |
-| Message in a thread after the sandbox evicted | Calls `POST /api/sessions/{id}/resume` — boots from latest snapshot. |
+| Message in a thread after the sandbox evicted | Calls `resume` — boots from the latest snapshot. |
 | Message in a thread with no snapshot to resume from | Posts a notice and creates a fresh session. |
 
 State (`thread_id → session_id, last_seq`) lives in a SQLite file at
 `$STATE_DB_PATH` (default `/data/state.db`). `last_seq` is used as the
-SSE `Last-Event-ID` so the bot only renders events from the current turn,
-not the entire session history.
+SSE `Last-Event-ID` so the bot only renders events from the current
+turn, not the entire session history.
 
-## Environment
+## Customize
 
-| Variable | Purpose |
+**The agent** — what it knows and can do — lives on anyfrm.com:
+
+- **Harness** — Claude or Codex today; BYO harness landing soon.
+- **System prompt** — set the agent's persona and instructions.
+- **Skills** — custom playbooks you add per agent.
+- **MCPs + connectors** — Linear, GitHub, Slack, etc. for tool access.
+- **Repo** (optional) — clone a codebase into the sandbox if the
+  agent needs it.
+
+Edit on the agent page; threads pick up changes on their next turn.
+
+**The bot** — how events render in Discord — is a small Python
+package. No build step:
+
+- `app/events.py` — how assistant text and tool calls are rendered.
+- `app/bot.py` — thread lifecycle (mention → thread, reply → message).
+- `app/config.py` — env-driven knobs (limits, timeouts).
+
+Edit, redeploy.
+
+## Settings reference
+
+The only ones you must set:
+
+| Variable | What it is |
 | --- | --- |
-| `DISCORD_BOT_TOKEN` | Discord application bot token. Must have **Message Content Intent** enabled. |
-| `ANYFRAME_BASE_URL` | URL of the anyframe API (e.g. `https://api.anyfrm.com`). |
-| `ANYFRAME_API_TOKEN` | `afm_…` personal token from `/settings/tokens` on the anyframe dashboard. |
-| `ANYFRAME_AGENT_ID` | Numeric id of the agent the bot drives. |
-| `STATE_DB_PATH` | Optional. Path to the SQLite file. Default `/data/state.db`. |
+| `ANYFRAME_API_KEY` | The `afm_…` key from anyframe Settings. |
+| `ANYFRAME_AGENT_ID` | The number after `/agents/` in your agent's URL. |
+| `DISCORD_BOT_TOKEN` | The bot token from the Discord Developer Portal. |
 
-## Discord setup (one-time)
+Recommended:
 
-1. Discord Developer Portal → New Application → Bot tab → reset token, copy it.
-2. Same page: enable **Message Content Intent** under *Privileged Gateway Intents*.
-3. OAuth2 → URL Generator. Scopes: `bot`. Permissions:
-   - Send Messages
-   - Read Message History
-   - Create Public Threads
-   - Send Messages in Threads
-4. Open the generated URL and invite the bot to your server.
+| Variable | What it is |
+| --- | --- |
+| `STATE_DB_PATH` | Where the SQLite file lives. Default `/data/state.db`. |
 
-## Deploy on Railway
+Optional tuning (defaults are sensible):
 
-1. Create a new Railway project (or reuse an existing one).
-2. **Add Service → Deploy from GitHub repo** → pick this repo.
-3. In the service's *Settings*:
-   - **Root Directory**: `/` (default)
-   - **Config Path**: `railway.toml`
-4. **Variables** tab → set the four env vars above.
-5. **Volumes** tab → mount a small (≥1 GB) volume at `/data`. This persists
-   the SQLite state across redeploys.
-6. Deploy. The bot should come online in Discord within a minute. Watch
-   *Logs* for `logged in as <bot-name> (...)`.
+| Variable | What it does |
+| --- | --- |
+| `ANYFRAME_BASE_URL` | AnyFrame control plane. Default `https://api.anyfrm.com`. |
+| `BOOT_TIMEOUT_S` | How long to wait for a sandbox to reach `running`. Default 180. |
+| `DISCORD_MSG_LIMIT` | Chars per Discord message before splitting. Default 1900. |
+| `THREAD_NAME_LIMIT` | Max chars used from the opening prompt as a thread title. Default 80. |
+| `THREAD_AUTO_ARCHIVE_MINUTES` | Discord thread auto-archive (60, 1440, 4320, or 10080). Default 10080. |
 
-To update env vars later, edit them in the Variables tab and Railway
-redeploys automatically.
+See `.env.example` for everything.
 
-## Local development
+## For developers
+
+<details>
+<summary>Local dev, layout, single-replica notes</summary>
+
+### Local dev
 
 ```bash
 uv sync
-export DISCORD_BOT_TOKEN=…
-export ANYFRAME_BASE_URL=http://localhost:8000
-export ANYFRAME_API_TOKEN=afm_…
-export ANYFRAME_AGENT_ID=4
-export STATE_DB_PATH=./state.db
-uv run python -c "import bot; bot.main()"
+cp .env.example .env  # fill in ANYFRAME_*, DISCORD_BOT_TOKEN
+uv run python -m app.main
 ```
+
+You should see `logged in as <bot> (...)` in the logs once the
+gateway handshake completes. Mention the bot in a server it's been
+invited to and a thread will spawn.
+
+### Layout
+
+```
+app/
+  config.py     — pydantic-settings; one Settings singleton
+  state.py      — SQLite mapping thread_id → (session_id, last_seq)
+  sessions.py   — AsyncAnyFrame client; ensure_session() boots / resumes
+  events.py     — render assistant + tool_use blocks for Discord
+  bot.py        — discord.Client wiring: on_message → ensure_session → stream
+  main.py       — entrypoint (`python -m app.main`)
+```
+
+### Notes
+
+- **Single replica only.** `discord.py` holds a single gateway
+  connection per bot token. Don't scale horizontally.
+- **State is local.** SQLite at `$STATE_DB_PATH`. Mount a Railway
+  Volume (or any persistent disk) at `/data` so the thread → session
+  mapping survives redeploys.
+
+</details>
 
 ## Integrating as a submodule
 
