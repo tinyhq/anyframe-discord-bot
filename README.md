@@ -163,20 +163,3 @@ app/
 
 </details>
 
-## Integrating as a submodule
-
-This repo is designed to be embedded into the
-[`tinyhq/box`](https://github.com/tinyhq/box) repo as a submodule at
-`examples/discord-bot`:
-
-```bash
-# from inside box/
-git submodule add git@github.com:tinyhq/box-discord-bot.git examples/discord-bot
-git commit -m "chore: add discord bot as submodule"
-```
-
-Cloners of `box` then run:
-
-```bash
-git submodule update --init --recursive
-```
