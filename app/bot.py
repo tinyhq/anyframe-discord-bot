@@ -15,8 +15,10 @@ UX
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
 import traceback
 from typing import Any
 
@@ -28,6 +30,50 @@ from .config import settings
 from .sessions import BootFailed
 
 logger = logging.getLogger("anyframe-discord-bot")
+
+
+async def _build_attachments(msg: discord.Message) -> list[dict[str, Any]]:
+    """Download and encode attachments from a Discord message.
+
+    Images are base64-encoded with kind='image'.
+    Text files are decoded with kind='text'.
+    Anything else is skipped — the API doesn't define a schema for it.
+    """
+    result = []
+    for att in msg.attachments:
+        mime = (
+            att.content_type
+            or mimetypes.guess_type(att.filename)[0]
+            or "application/octet-stream"
+        )
+        try:
+            data = await att.read()
+        except Exception:
+            logger.warning("failed to read attachment %s", att.filename)
+            continue
+
+        if mime.startswith("image/"):
+            result.append(
+                {
+                    "kind": "image",
+                    "name": att.filename,
+                    "mime": mime,
+                    "data_base64": base64.b64encode(data).decode(),
+                }
+            )
+        elif mime.startswith("text/"):
+            result.append(
+                {
+                    "kind": "text",
+                    "name": att.filename,
+                    "mime": mime,
+                    "text": data.decode("utf-8", errors="replace"),
+                }
+            )
+        else:
+            logger.debug("skipping unsupported attachment type %s (%s)", att.filename, mime)
+
+    return result
 
 
 async def _stream_turn(sid: str, thread: discord.Thread, since_seq: int) -> int:
@@ -109,11 +155,13 @@ def make_client() -> discord.Client:
         if is_thread and existing:
             thread = msg.channel
             prompt = msg.content.replace(f"<@{client.user.id}>", "").strip()
-            if not prompt:
+            attachments = await _build_attachments(msg)
+            if not prompt and not attachments:
                 return
         elif mentioned and not is_thread:
             prompt = msg.content.replace(f"<@{client.user.id}>", "").strip()
-            if not prompt:
+            attachments = await _build_attachments(msg)
+            if not prompt and not attachments:
                 await msg.reply("Tell me what to bug-bash and I'll spin up a sandbox.")
                 return
             thread = await msg.create_thread(
@@ -130,7 +178,10 @@ def make_client() -> discord.Client:
             return
 
         try:
-            await sessions.client().sessions.message(sid, {"prompt": prompt})
+            body: dict[str, Any] = {"prompt": prompt}
+            if attachments:
+                body["attachments"] = attachments
+            await sessions.client().sessions.message(sid, body)
         except APIError as e:
             await thread.send(f"❌ failed to send message: {e}")
             return
