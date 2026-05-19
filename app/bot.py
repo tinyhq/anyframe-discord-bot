@@ -107,7 +107,9 @@ async def _stream_turn(sid: str, thread: discord.Thread, since_seq: int) -> int:
                 pass
         rendered = events.render_event(payload)
         if rendered:
-            buf += rendered + "\n\n"
+            # Delta chunks are streaming fragments — append bare.
+            # Complete blocks (tool use, errors, etc.) get a paragraph break.
+            buf += rendered if payload.get("delta") else rendered + "\n\n"
             await flush()
         if payload.get("type") == "result":
             await flush(force=True)
