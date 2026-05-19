@@ -25,6 +25,14 @@ def render_event(payload: dict[str, Any]) -> str | None:
     t = payload.get("type")
     if t == "assistant":
         blocks = (payload.get("message") or {}).get("content") or payload.get("content") or []
+        if payload.get("delta"):
+            # Streaming fragment — concatenate text as-is, no stripping or joining
+            text = "".join(
+                b.get("text") or ""
+                for b in blocks
+                if (b.get("type") or b.get("__class__", "")).lower() in ("text", "textblock")
+            )
+            return text or None
         chunks = [c for b in blocks if (c := render_block(b))]
         return "\n".join(chunks) if chunks else None
     if t == "permission_request":
