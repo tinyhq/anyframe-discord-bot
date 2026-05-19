@@ -87,7 +87,17 @@ async def _stream_turn(sid: str, thread: discord.Thread, since_seq: int) -> int:
             return
         if force or len(buf) >= settings.discord_msg_limit:
             chunk, buf = buf[: settings.discord_msg_limit], buf[settings.discord_msg_limit :]
-            await thread.send(chunk)
+            if chunk.strip():
+                await thread.send(chunk.strip())
+            return
+        # Send everything up to the last completed line without waiting for
+        # the full turn — gives the user incremental output as lines arrive.
+        last_nl = buf.rfind("\n")
+        if last_nl == -1:
+            return
+        chunk, buf = buf[:last_nl], buf[last_nl + 1:]
+        if chunk.strip():
+            await thread.send(chunk.strip())
 
     stream = sessions.client().sessions.events(
         sid,
