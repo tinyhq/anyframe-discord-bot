@@ -15,8 +15,10 @@ UX
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
 import traceback
 from typing import Any
 
@@ -30,6 +32,50 @@ from .sessions import BootFailed
 logger = logging.getLogger("anyframe-discord-bot")
 
 
+async def _build_attachments(msg: discord.Message) -> list[dict[str, Any]]:
+    """Download and encode attachments from a Discord message.
+
+    Images are base64-encoded with kind='image'.
+    Text files are decoded with kind='text'.
+    Anything else is skipped — the API doesn't define a schema for it.
+    """
+    result = []
+    for att in msg.attachments:
+        mime = (
+            att.content_type
+            or mimetypes.guess_type(att.filename)[0]
+            or "application/octet-stream"
+        )
+        try:
+            data = await att.read()
+        except Exception:
+            logger.warning("failed to read attachment %s", att.filename)
+            continue
+
+        if mime.startswith("image/"):
+            result.append(
+                {
+                    "kind": "image",
+                    "name": att.filename,
+                    "mime": mime,
+                    "data_base64": base64.b64encode(data).decode(),
+                }
+            )
+        elif mime.startswith("text/"):
+            result.append(
+                {
+                    "kind": "text",
+                    "name": att.filename,
+                    "mime": mime,
+                    "text": data.decode("utf-8", errors="replace"),
+                }
+            )
+        else:
+            logger.debug("skipping unsupported attachment type %s (%s)", att.filename, mime)
+
+    return result
+
+
 async def _stream_turn(sid: str, thread: discord.Thread, since_seq: int) -> int:
     """Stream a single turn into the thread. Returns the highest seq seen."""
     buf = ""
@@ -41,7 +87,17 @@ async def _stream_turn(sid: str, thread: discord.Thread, since_seq: int) -> int:
             return
         if force or len(buf) >= settings.discord_msg_limit:
             chunk, buf = buf[: settings.discord_msg_limit], buf[settings.discord_msg_limit :]
-            await thread.send(chunk)
+            if chunk.strip():
+                await thread.send(chunk.strip())
+            return
+        # Send everything up to the last completed line without waiting for
+        # the full turn — gives the user incremental output as lines arrive.
+        last_nl = buf.rfind("\n")
+        if last_nl == -1:
+            return
+        chunk, buf = buf[:last_nl], buf[last_nl + 1:]
+        if chunk.strip():
+            await thread.send(chunk.strip())
 
     stream = sessions.client().sessions.events(
         sid,
@@ -59,23 +115,20 @@ async def _stream_turn(sid: str, thread: discord.Thread, since_seq: int) -> int:
                 last_seq = max(last_seq, int(event.id))
             except ValueError:
                 pass
-        # Streamed text arrives as many `delta:true` assistant chunks; the
-        # bridge strips that text from the final message. Coalesce the chunks
-        # (append raw, no separators) so the reply reads as one continuous
-        # message instead of one-token-per-line — which is what caused the
-        # garbled/duplicated rendering vs the webapp. Thinking deltas are
-        # dropped (too noisy for Discord).
-        if payload.get("type") == "assistant" and payload.get("delta"):
-            for b in payload.get("content") or []:
-                if (b.get("type") or "").lower() in ("text", "textblock"):
-                    buf += b.get("text") or ""
-            await flush()
-            continue
         rendered = events.render_event(payload)
         if rendered:
-            if buf and not buf.endswith("\n\n"):
-                buf += "\n\n"
-            buf += rendered + "\n\n"
+            if payload.get("delta"):
+                # Streamed text fragment (render_event concatenates the chunk's
+                # text) — coalesce raw so the reply reads as one continuous
+                # message, not one-token-per-line.
+                buf += rendered
+            else:
+                # Completed block (tool use, tool-result media, errors, warns) —
+                # separate it from any preceding streamed text with a paragraph
+                # break so it doesn't run into the message text.
+                if buf and not buf.endswith("\n\n"):
+                    buf += "\n\n"
+                buf += rendered + "\n\n"
             await flush()
         if payload.get("type") == "result":
             await flush(force=True)
@@ -123,11 +176,13 @@ def make_client() -> discord.Client:
         if is_thread and existing:
             thread = msg.channel
             prompt = msg.content.replace(f"<@{client.user.id}>", "").strip()
-            if not prompt:
+            attachments = await _build_attachments(msg)
+            if not prompt and not attachments:
                 return
         elif mentioned and not is_thread:
             prompt = msg.content.replace(f"<@{client.user.id}>", "").strip()
-            if not prompt:
+            attachments = await _build_attachments(msg)
+            if not prompt and not attachments:
                 await msg.reply("Tell me what to bug-bash and I'll spin up a sandbox.")
                 return
             thread = await msg.create_thread(
@@ -144,7 +199,10 @@ def make_client() -> discord.Client:
             return
 
         try:
-            await sessions.client().sessions.message(sid, {"prompt": prompt})
+            body: dict[str, Any] = {"prompt": prompt}
+            if attachments:
+                body["attachments"] = attachments
+            await sessions.client().sessions.message(sid, body)
         except APIError as e:
             await thread.send(f"❌ failed to send message: {e}")
             return
