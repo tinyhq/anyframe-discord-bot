@@ -59,8 +59,22 @@ async def _stream_turn(sid: str, thread: discord.Thread, since_seq: int) -> int:
                 last_seq = max(last_seq, int(event.id))
             except ValueError:
                 pass
+        # Streamed text arrives as many `delta:true` assistant chunks; the
+        # bridge strips that text from the final message. Coalesce the chunks
+        # (append raw, no separators) so the reply reads as one continuous
+        # message instead of one-token-per-line — which is what caused the
+        # garbled/duplicated rendering vs the webapp. Thinking deltas are
+        # dropped (too noisy for Discord).
+        if payload.get("type") == "assistant" and payload.get("delta"):
+            for b in payload.get("content") or []:
+                if (b.get("type") or "").lower() in ("text", "textblock"):
+                    buf += b.get("text") or ""
+            await flush()
+            continue
         rendered = events.render_event(payload)
         if rendered:
+            if buf and not buf.endswith("\n\n"):
+                buf += "\n\n"
             buf += rendered + "\n\n"
             await flush()
         if payload.get("type") == "result":
