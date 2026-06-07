@@ -23,6 +23,7 @@ import traceback
 from typing import Any
 
 import discord
+import httpx
 from anyframe.exceptions import APIError
 
 from . import events, sessions, state
@@ -30,6 +31,13 @@ from .config import settings
 from .sessions import BootFailed
 
 logger = logging.getLogger("anyframe-discord-bot")
+
+# A live SSE turn can go silent longer than the SDK's read timeout (e.g. while a
+# slow tool like share_file uploads or Playwright captures screenshots). That
+# surfaces as httpx.ReadTimeout, which ends the stream mid-turn. We reconnect and
+# replay from the last seq instead of dropping the rest of the turn. Bail only
+# after this many *consecutive* reconnects that made no progress.
+_MAX_RECONNECTS = 6
 
 
 async def _build_attachments(msg: discord.Message) -> list[dict[str, Any]]:
@@ -99,42 +107,62 @@ async def _stream_turn(sid: str, thread: discord.Thread, since_seq: int) -> int:
         if chunk.strip():
             await thread.send(chunk.strip())
 
-    stream = sessions.client().sessions.events(
-        sid,
-        last_event_id=str(since_seq) if since_seq > 0 else None,
-    )
-    async for event in stream:
-        if not event.data:
-            continue
+    stalled = 0
+    while True:
+        seq_before = last_seq
+        stream = sessions.client().sessions.events(
+            sid,
+            last_event_id=str(last_seq) if last_seq > 0 else None,
+        )
         try:
-            payload: dict[str, Any] = event.json()
-        except json.JSONDecodeError:
-            continue
-        if event.id is not None:
-            try:
-                last_seq = max(last_seq, int(event.id))
-            except ValueError:
-                pass
-        rendered = events.render_event(payload)
-        if rendered:
-            if payload.get("delta"):
-                # Streamed text fragment (render_event concatenates the chunk's
-                # text) — coalesce raw so the reply reads as one continuous
-                # message, not one-token-per-line.
-                buf += rendered
-            else:
-                # Completed block (tool use, tool-result media, errors, warns) —
-                # separate it from any preceding streamed text with a paragraph
-                # break so it doesn't run into the message text.
-                if buf and not buf.endswith("\n\n"):
-                    buf += "\n\n"
-                buf += rendered + "\n\n"
-            await flush()
-        if payload.get("type") == "result":
-            await flush(force=True)
-            return last_seq
-    await flush(force=True)
-    return last_seq
+            async for event in stream:
+                if not event.data:
+                    continue
+                try:
+                    payload: dict[str, Any] = event.json()
+                except json.JSONDecodeError:
+                    continue
+                if event.id is not None:
+                    try:
+                        last_seq = max(last_seq, int(event.id))
+                    except ValueError:
+                        pass
+                rendered = events.render_event(payload)
+                if rendered:
+                    if payload.get("delta"):
+                        # Streamed text fragment (render_event concatenates the
+                        # chunk's text) — coalesce raw so the reply reads as one
+                        # continuous message, not one-token-per-line.
+                        buf += rendered
+                    else:
+                        # Completed block (tool use, tool-result media, errors,
+                        # warns) — separate it from any preceding streamed text
+                        # with a paragraph break so it doesn't run into the text.
+                        if buf and not buf.endswith("\n\n"):
+                            buf += "\n\n"
+                        buf += rendered + "\n\n"
+                    await flush()
+                if payload.get("type") == "result":
+                    await flush(force=True)
+                    return last_seq
+        except (httpx.TimeoutException, httpx.TransportError):
+            # SSE read timed out during a quiet stretch, or a transient drop —
+            # reconnect below and replay seq > last_seq.
+            pass
+        # Stream ended without a `result` (clean close or the caught drop). The
+        # turn is still running server-side, so reconnect and keep streaming.
+        if last_seq > seq_before:
+            stalled = 0  # made progress this round — keep going freely
+        else:
+            stalled += 1
+            if stalled > _MAX_RECONNECTS:
+                logger.warning("event stream stalled for session %s; giving up", sid)
+                await flush(force=True)
+                await thread.send(
+                    "⚠️ lost the live stream before the turn finished — "
+                    "open the session in the dashboard for the rest."
+                )
+                return last_seq
 
 
 def make_client() -> discord.Client:
