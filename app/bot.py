@@ -117,9 +117,18 @@ async def _stream_turn(sid: str, thread: discord.Thread, since_seq: int) -> int:
                 pass
         rendered = events.render_event(payload)
         if rendered:
-            # Delta chunks are streaming fragments — append bare.
-            # Complete blocks (tool use, errors, etc.) get a paragraph break.
-            buf += rendered if payload.get("delta") else rendered + "\n\n"
+            if payload.get("delta"):
+                # Streamed text fragment (render_event concatenates the chunk's
+                # text) — coalesce raw so the reply reads as one continuous
+                # message, not one-token-per-line.
+                buf += rendered
+            else:
+                # Completed block (tool use, tool-result media, errors, warns) —
+                # separate it from any preceding streamed text with a paragraph
+                # break so it doesn't run into the message text.
+                if buf and not buf.endswith("\n\n"):
+                    buf += "\n\n"
+                buf += rendered + "\n\n"
             await flush()
         if payload.get("type") == "result":
             await flush(force=True)
