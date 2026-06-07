@@ -95,6 +95,7 @@ async def _stream_turn(sid: str, thread: discord.Thread, since_seq: int) -> int:
             return
         if force or len(buf) >= settings.discord_msg_limit:
             chunk, buf = buf[: settings.discord_msg_limit], buf[settings.discord_msg_limit :]
+            chunk = events.unwrap_markdown_images(chunk)
             if chunk.strip():
                 await thread.send(chunk.strip())
             return
@@ -104,6 +105,7 @@ async def _stream_turn(sid: str, thread: discord.Thread, since_seq: int) -> int:
         if last_nl == -1:
             return
         chunk, buf = buf[:last_nl], buf[last_nl + 1:]
+        chunk = events.unwrap_markdown_images(chunk)
         if chunk.strip():
             await thread.send(chunk.strip())
 
