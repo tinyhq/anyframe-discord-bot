@@ -11,6 +11,14 @@ _MEDIA_HINTS = (
     ".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".mov", ".pdf",
 )
 
+# Discord renders markdown image syntax as literal text. Agents often inline
+# screenshots as ![alt](url); rewrite to the bare url so Discord auto-embeds it.
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((https?://[^\s)]+)\)")
+
+
+def unwrap_markdown_images(text: str) -> str:
+    return _MD_IMAGE_RE.sub(r"\1", text)
+
 
 def _media_urls(text: str | None) -> list[str]:
     if not text:
